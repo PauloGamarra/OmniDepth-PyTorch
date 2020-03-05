@@ -20,7 +20,7 @@ checkpoint_path = 'rectnet.pth'
 # checkpoint_path = osp.join(checkpoint_dir, 'checkpoint_latest.pth')
 num_workers = 4
 validation_sample_freq = -1
-device_ids = [0,1,2,3]
+device_ids = [0]
 
 
 # -------------------------------------------------------
