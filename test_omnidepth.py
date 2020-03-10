@@ -13,8 +13,8 @@ import os.path as osp
 # --------------
 network_type = 'RectNet' # 'RectNet' or 'UResNet'
 experiment_name = 'omnidepth'
-input_dir = '' # Dataset location
-val_file_list = '' # List of evaluation files
+input_dir = '/home/paulo/datasets/3d60' # Dataset location
+val_file_list = './splits/my_test.txt' # List of evaluation files
 checkpoint_dir = osp.join('experiments', experiment_name)
 checkpoint_path = 'rectnet.pth'
 # checkpoint_path = osp.join(checkpoint_dir, 'checkpoint_latest.pth')
