@@ -14,22 +14,29 @@ import cv2 as cv
 from pdb import set_trace as pause
 
 import os.path as osp
+import timeit 
+
+from fibonacci_sph import fibonacci_sphere, cart2sph
+
 
 # --------------
 # PARAMETERS
 # --------------
+num_points = 100
+num_tests = 10000
+seed = 42
 network_type = 'RectNet' # 'RectNet' or 'UResNet'
 experiment_name = 'omnidepth'
-input_dir = '' # Dataset location
-val_file_list = '' # List of evaluation files
+input_dir = '/home/paulo/datasets/3d60' # Dataset location
+val_file_list = './splits/my_test.txt' # List of evaluation files
 checkpoint_dir = osp.join('experiments', experiment_name)
 checkpoint_path = 'rectnet.pth'
 # checkpoint_path = osp.join(checkpoint_dir, 'checkpoint_latest.pth')
-num_workers = -1
+num_workers = 4
 validation_sample_freq = -1
 device_ids = [0]
 #input_path = '/home/paulo/datasets/lab/lab_original/SAM_100_0130.jpg'
-input_path = '/home/paulo/datasets/3d60/Matteport3D/92_fa5f164b48f043c6b2b0bb9e8631a4821_color_0_Left_Down_0.0.png'
+#input_path = '/home/paulo/datasets/3d60/Matteport3D/92_fa5f164b48f043c6b2b0bb9e8631a4821_color_0_Left_Down_0.0.png'
 
 # -------------------------------------------------------
 # Fill in the rest
@@ -60,36 +67,27 @@ network = nn.DataParallel(
 	device_ids=device_ids).to(device)
 
 
-#loading the model
+val_dataloader = torch.utils.data.DataLoader(
+        dataset=OmniDepthDataset(
+                root_path=input_dir,
+                path_to_img_list=val_file_list),
+        batch_size=1,
+        shuffle=True,
+        num_workers=num_workers,
+        drop_last=False)
 
-checkpoint = torch.load(checkpoint_path)
-util.load_partial_model(network, checkpoint['state_dict'])
+trainer = OmniDepthTrainer(
+        experiment_name,
+        network,
+        None,
+        val_dataloader,
+        None,
+        None,
+        checkpoint_dir,
+        device,
+        validation_sample_freq=validation_sample_freq)
 
-#runnig inference
 
-with torch.no_grad():
-    pano_img = io.imread(input_path).astype(np.float32) / 255.
-    pano = cv.resize(pano_img, (512,256))   
-    pano = np.expand_dims(pano, axis=0)
-    pano = np.rollaxis(pano, 3, 1)
-    
+points = fibonacci_sphere(num_points)
 
- 
-    rgb_input = torch.from_numpy(pano).float().to(device)      
-
-   
- 
-    output = network(rgb_input)    
-
-    depth = output[0].cpu().squeeze()
-    depth2 = output[1].cpu().squeeze()
-
-    plt.subplot(2,2,1)
-    plt.imshow(pano_img)
-    plt.subplot(2,2,3)
-    plt.imshow(depth)
-    plt.subplot(2,2,4)
-    plt.imshow(depth2)
-    plt.show()
-
-    np.save('./omni_depth_pred' + osp.basename(input_path) + '.npy', depth.cpu())
+trainer.evaluate_rotations(checkpoint_path, points, num_tests, device)

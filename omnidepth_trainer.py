@@ -9,6 +9,11 @@ import os.path as osp
 import util
 from metrics import *
 
+import numpy as np
+from pdb import set_trace as pause
+from fibonacci_sph import cart2sph
+from scipy.spatial.transform import Rotation as R
+from PanoProcessing.rotate_pano import synthesizeRotation
 
 # From https://github.com/fyu/drn
 class AverageMeter(object):
@@ -263,8 +268,9 @@ class OmniDepthTrainer(object):
 
                 # Parse the data
                 inputs, gt, other = self.parse_data(data)
-
+                
                 # Run a forward pass
+                
                 output = self.forward_pass(inputs)
 
                 # Compute the evaluation metrics
@@ -279,6 +285,73 @@ class OmniDepthTrainer(object):
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))
         self.print_validation_report()
+    
+    def evaluate_rotations(self, checkpoint_path, points, num_tests, device):
+        print('Evaluating on rotations....')
+
+        # Load the checkpoint to evaluate
+        self.load_checkpoint(checkpoint_path, True, True)
+
+        # Put the model in eval mode
+        self.network = self.network.eval()
+
+        # print(self.network.module.input0_0.conv.bias)
+        # print(self.network.module.input0_0.conv.bias.shape)
+        # exit()
+
+        # Reset meter
+        self.reset_eval_metrics()
+        
+        # Reset output file
+        with open('rotations_results.txt', 'w') as output:
+            output.write('point,x,y,z,abs_rel_error\n')
+
+        # Load data
+        s = time.time()
+        with torch.no_grad():
+            for iteration in range(num_tests):
+                print(
+                    'Evaluating {}/{}'.format(iteration, num_tests),
+                    end='\r')
+
+                data = iter(self.val_dataloader).next()
+                
+                # Parse the data
+                inputs, gt, other = self.parse_data(data)
+
+                # Rotate randomly
+                point_id = np.random.choice(points.shape[0], 1, replace=False)
+                point = points[point_id][0]
+                az, el, _ = cart2sph(point[0], point[1], point[2])
+                inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , R.from_rotvec([el, 0, az]).as_matrix())
+                inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
+                inputs = [torch.from_numpy(inputs).float().to(device)]
+                
+                gt = [synthesizeRotation(np.rollaxis(x.cpu().data.numpy()[0], 0, 3) , R.from_rotvec([el, 0, az]).as_matrix()) for x in gt]
+                gt = [np.expand_dims(np.rollaxis(x,2,0), axis=0) for x in gt]
+                gt = [torch.from_numpy(x).float().to(device) for x in gt]
+                 
+
+                # Run a forward pass
+                output = self.forward_pass(inputs)
+
+                # Compute the evaluation metrics
+                self.compute_eval_metrics(output, gt)
+                
+                with open('rotations_results.txt', 'a') as output:
+                    output.write('{},{},{},{},{}\n'.format(point_id[0], point[0], point[1], point[2], self.abs_rel_error_meter.avg))
+
+                self.reset_eval_metrics()
+                
+               
+                # If trying to save intermediate outputs
+                if self.validation_sample_freq >= 0:
+                    # Save the intermediate outputs
+                    if i % self.validation_sample_freq == 0:
+                        self.save_samples(inputs, gt, other, output)
+
+        # Print a report on the validation results
+        print('Evaluation finished in {} seconds'.format(time.time() - s))        
 
     def parse_data(self, data):
         '''
@@ -324,7 +397,7 @@ class OmniDepthTrainer(object):
         # Align the prediction scales via median
         median_scaling_factor = gt_depth[depth_mask > 0].median() / depth_pred[
             depth_mask > 0].median()
-        depth_pred *= median_scaling_factor
+        #depth_pred *= median_scaling_factor
 
         abs_rel = abs_rel_error(depth_pred, gt_depth, depth_mask)
         sq_rel = sq_rel_error(depth_pred, gt_depth, depth_mask)
