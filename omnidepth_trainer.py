@@ -14,7 +14,12 @@ from pdb import set_trace as pause
 from fibonacci_sph import cart2sph
 from scipy.spatial.transform import Rotation as R
 from PanoProcessing.rotate_pano import synthesizeRotation
+import matplotlib.pyplot as plt
 
+from albumentations import Normalize
+from model import DenseNetUprightAdjustment
+import cv2
+from skimage import io
 # From https://github.com/fyu/drn
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -261,10 +266,10 @@ class OmniDepthTrainer(object):
         s = time.time()
         with torch.no_grad():
             for batch_num, data in enumerate(self.val_dataloader):
-                print(
-                    'Evaluating {}/{}'.format(batch_num, len(
-                        self.val_dataloader)),
-                    end='\r')
+                #print(
+                #    'Evaluating {}/{}'.format(batch_num, len(
+                #        self.val_dataloader)),
+                #    end='\r')
 
                 # Parse the data
                 inputs, gt, other = self.parse_data(data)
@@ -272,7 +277,7 @@ class OmniDepthTrainer(object):
                 # Run a forward pass
                 
                 output = self.forward_pass(inputs)
-
+               
                 # Compute the evaluation metrics
                 self.compute_eval_metrics(output, gt)
 
@@ -286,8 +291,103 @@ class OmniDepthTrainer(object):
         print('Evaluation finished in {} seconds'.format(time.time() - s))
         self.print_validation_report()
     
-    def evaluate_rotations(self, checkpoint_path, points, num_tests, device):
+    def evaluate_rotations(self, checkpoint_path, num_tests, rot_range, device, seed=42):
         print('Evaluating on rotations....')
+
+        # Set seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)        
+
+        # Load the checkpoint to evaluate
+        self.load_checkpoint(checkpoint_path, True, True)
+
+        # Put the model in eval mode
+        self.network = self.network.eval()
+
+        # print(self.network.module.input0_0.conv.bias)
+        # print(self.network.module.input0_0.conv.bias.shape)
+        # exit()
+
+        # Reset meter
+        self.reset_eval_metrics()
+
+        # Reset output file
+        with open('rotations_results.txt', 'w') as output:
+            output.write('input,rand_x,rand_y,abs_rel,sq_rel,rms_sq_lin,rms_sq_log,d1,d2,d3\n')
+
+        # Load data
+        s = time.time()
+        with torch.no_grad():
+            for iteration in range(num_tests):
+                print(
+                    'Evaluating {}/{}'.format(iteration, num_tests),
+                    end='\r')
+
+                data = iter(self.val_dataloader).next()
+                
+                # Parse the data
+                inputs, gt, other = self.parse_data(data)
+                
+                # Rotate randomly
+                
+                rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
+                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+ 
+                inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
+                inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
+                inputs = [torch.from_numpy(inputs).float().to(device)]
+                
+                """
+                plt.subplot(1,2,1)
+                plt.imshow(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3))
+                plt.show()
+                """
+
+                # Run a forward pass
+                output = self.forward_pass(inputs)
+
+
+                
+                output = synthesizeRotation(np.rollaxis(output[0].cpu().data.numpy()[0], 0, 3) , random_r.inv().as_matrix())
+                output = np.expand_dims(np.rollaxis(output,2,0), axis=0)
+                output = [torch.from_numpy(output).float().to(device)]
+
+                
+
+                # Compute the evaluation metrics
+                self.compute_eval_metrics(output, gt)
+                
+                with open('rotations_results.txt', 'a') as output:
+                    output.write('{},{},{},{},{},{},{},{},{},{}\n'.format(other[0],
+                                                                          rx, 
+                                                                          ry, 
+                                                                          self.abs_rel_error_meter.avg,
+                                                                          self.sq_rel_error_meter.avg, 
+                                                                          self.lin_rms_sq_error_meter.avg,
+                                                                          self.log_rms_sq_error_meter.avg,
+                                                                          self.d1_inlier_meter.avg,
+                                                                          self.d2_inlier_meter.avg,
+                                                                          self.d3_inlier_meter.avg))
+
+                self.reset_eval_metrics()
+                 
+               
+                # If trying to save intermediate outputs
+                if self.validation_sample_freq >= 0:
+                    # Save the intermediate outputs
+                    if i % self.validation_sample_freq == 0:
+                        self.save_samples(inputs, gt, other, output)
+
+        # Print a report on the validation results
+        print('Evaluation finished in {} seconds'.format(time.time() - s))
+
+    
+    def evaluate_upright(self, checkpoint_path, num_tests, rot_range, device, seed=42):
+        print('Evaluating on rotations....')
+
+        # Set seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)        
 
         # Load the checkpoint to evaluate
         self.load_checkpoint(checkpoint_path, True, True)
@@ -303,8 +403,20 @@ class OmniDepthTrainer(object):
         self.reset_eval_metrics()
         
         # Reset output file
-        with open('rotations_results.txt', 'w') as output:
-            output.write('point,x,y,z,abs_rel_error\n')
+        with open('upright_results.txt', 'w') as output:
+            output.write('input,rand_x,rand_y,pred_x,pred_y,abs_rel,sq_rel,rms_sq_lin,rms_sq_log,d1,d2,d3\n')
+
+        #set upright model
+        upright = DenseNetUprightAdjustment()
+        up_save_dict = torch.load('best90.pth')
+        upright.to(device)
+        upright.load_state_dict(up_save_dict['model'])
+
+        aug = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+
+
+
 
         # Load data
         s = time.time()
@@ -320,29 +432,84 @@ class OmniDepthTrainer(object):
                 inputs, gt, other = self.parse_data(data)
 
                 # Rotate randomly
-                point_id = np.random.choice(points.shape[0], 1, replace=False)
-                point = points[point_id][0]
-                az, el, _ = cart2sph(point[0], point[1], point[2])
-                inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , R.from_rotvec([el, 0, az]).as_matrix())
+                
+                rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
+                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+ 
+                inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
                 inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
                 inputs = [torch.from_numpy(inputs).float().to(device)]
                 
-                gt = [synthesizeRotation(np.rollaxis(x.cpu().data.numpy()[0], 0, 3) , R.from_rotvec([el, 0, az]).as_matrix()) for x in gt]
-                gt = [np.expand_dims(np.rollaxis(x,2,0), axis=0) for x in gt]
-                gt = [torch.from_numpy(x).float().to(device) for x in gt]
-                 
+                """
+                plt.subplot(1,2,1)
+                plt.imshow(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3))
+                """
 
+                img = np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) * 255
+                img = cv2.resize(img, (442, 221))
+
+                data = {"image": img}
+                img = aug(**data)["image"]
+
+                img_pt = torch.from_numpy(img).permute(2, 0, 1)
+                img_pt = img_pt.unsqueeze(0).to(device)
+
+
+                with torch.no_grad():
+                    rot = upright(img_pt)
+
+                rot = (float(rot[0][0] * 90), float(rot[0][1] * 90))
+
+               
+                correction_r = R.from_euler('zyx', [0,rot[1],rot[0]], degrees=True) 
+                inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , correction_r.inv().as_matrix())
+                inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
+                inputs = [torch.from_numpy(inputs).float().to(device)]
+
+                """ 
+                print('expected: {}, {}'.format(rx, ry))
+                print('predicted: {}, {}'.format(rot[0], rot[1]))
+
+                
+                plt.subplot(1,2,2)
+                plt.imshow(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3))
+                plt.show()
+                """
                 # Run a forward pass
                 output = self.forward_pass(inputs)
+
+
+                output = synthesizeRotation(np.rollaxis(output[0].cpu().data.numpy()[0], 0, 3) , correction_r.as_matrix())
+                output = np.expand_dims(np.rollaxis(output,2,0), axis=0)
+                output = [torch.from_numpy(output).float().to(device)]
+                
+                output = synthesizeRotation(np.rollaxis(output[0].cpu().data.numpy()[0], 0, 3) , random_r.inv().as_matrix())
+                output = np.expand_dims(np.rollaxis(output,2,0), axis=0)
+                output = [torch.from_numpy(output).float().to(device)]
+
+                
 
                 # Compute the evaluation metrics
                 self.compute_eval_metrics(output, gt)
                 
-                with open('rotations_results.txt', 'a') as output:
-                    output.write('{},{},{},{},{}\n'.format(point_id[0], point[0], point[1], point[2], self.abs_rel_error_meter.avg))
-
-                self.reset_eval_metrics()
                 
+                with open('upright_results.txt', 'a') as output:
+                    output.write('{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(other[0],
+                                                                          rx,
+                                                                          ry,
+                                                                          rot[0],
+                                                                          rot[1],
+                                                                          self.abs_rel_error_meter.avg,
+                                                                          self.sq_rel_error_meter.avg,
+                                                                          self.lin_rms_sq_error_meter.avg,
+                                                                          self.log_rms_sq_error_meter.avg,
+                                                                          self.d1_inlier_meter.avg,
+                                                                          self.d2_inlier_meter.avg,
+                                                                          self.d3_inlier_meter.avg))
+
+                #self.reset_eval_metrics()
+
+                 
                
                 # If trying to save intermediate outputs
                 if self.validation_sample_freq >= 0:
@@ -352,6 +519,223 @@ class OmniDepthTrainer(object):
 
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))        
+        self.print_validation_report()    
+
+    def upright_examples(self, checkpoint_path, num_tests, rot_range, device, seed=42):
+        print('Evaluating on rotations....')
+
+        # Set seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)        
+
+        # Load the checkpoint to evaluate
+        self.load_checkpoint(checkpoint_path, True, True)
+
+        # Put the model in eval mode
+        self.network = self.network.eval()
+
+        # print(self.network.module.input0_0.conv.bias)
+        # print(self.network.module.input0_0.conv.bias.shape)
+        # exit()
+
+        # Reset meter
+        self.reset_eval_metrics()
+        
+        # Reset output file
+        with open('upright_examples.txt', 'w') as output:
+            output.write('input,rand_x,rand_y,pred_x,pred_y\n')
+
+        #set upright model
+        upright = DenseNetUprightAdjustment()
+        up_save_dict = torch.load('best90.pth')
+        upright.to(device)
+        upright.load_state_dict(up_save_dict['model'])
+
+        aug = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+
+
+
+
+        # Load data
+        s = time.time()
+        with torch.no_grad():
+            for iteration in range(num_tests):
+                print(
+                    'Evaluating {}/{}'.format(iteration, num_tests),
+                    end='\r')
+
+                data = iter(self.val_dataloader).next()
+                
+                # Parse the data
+                inputs, gt, other = self.parse_data(data)
+
+                # Rotate randomly
+                
+                rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
+                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+ 
+                rot_inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
+                rot_inputs = np.expand_dims(np.rollaxis(rot_inputs,2,0), axis=0)
+                rot_inputs = [torch.from_numpy(rot_inputs).float().to(device)]
+                
+
+                img = np.rollaxis(rot_inputs[0].cpu().data.numpy()[0], 0, 3) * 255
+                img = cv2.resize(img, (442, 221))
+
+                data = {"image": img}
+                img = aug(**data)["image"]
+
+                img_pt = torch.from_numpy(img).permute(2, 0, 1)
+                img_pt = img_pt.unsqueeze(0).to(device)
+
+
+                with torch.no_grad():
+                    rot = upright(img_pt)
+
+                rot = (float(rot[0][0] * 90), float(rot[0][1] * 90))
+
+               
+                correction_r = R.from_euler('zyx', [0,rot[1],rot[0]], degrees=True) 
+                corrected_inputs = synthesizeRotation(np.rollaxis(rot_inputs[0].cpu().data.numpy()[0], 0, 3) , correction_r.inv().as_matrix())
+                corrected_inputs = np.expand_dims(np.rollaxis(corrected_inputs,2,0), axis=0)
+                corrected_inputs = [torch.from_numpy(corrected_inputs).float().to(device)]
+                
+                """
+                plt.subplot(2,3,1)
+                plt.imshow(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3))
+                plt.subplot(2,3,2)
+                plt.imshow(np.rollaxis(rot_inputs[0].cpu().data.numpy()[0], 0, 3))
+                plt.subplot(2,3,3)
+                plt.imshow(np.rollaxis(corrected_inputs[0].cpu().data.numpy()[0], 0, 3))
+                """
+                
+                
+                # Run a forward pass
+                input_output = self.forward_pass(inputs)
+                rot_output = self.forward_pass(rot_inputs)
+                corrected_output = self.forward_pass(corrected_inputs)
+                
+                """
+                plt.subplot(2,3,4)
+                plt.imshow(np.squeeze(np.rollaxis(input_output[0].cpu().data.numpy()[0], 0, 3)))
+                plt.subplot(2,3,5)
+                plt.imshow(np.squeeze(np.rollaxis(rot_output[0].cpu().data.numpy()[0], 0, 3)))
+                plt.subplot(2,3,6)
+                plt.imshow(np.squeeze(np.rollaxis(corrected_output[0].cpu().data.numpy()[0], 0, 3)))
+
+                plt.show()
+                """
+                
+                np.save('./examples/' + str(iteration) + '_input_output.npy', np.squeeze(np.rollaxis(input_output[0].cpu().data.numpy()[0], 0, 3)))
+                np.save('./examples/' + str(iteration) + '_rot_output.npy', np.squeeze(np.rollaxis(rot_output[0].cpu().data.numpy()[0], 0, 3)))
+                np.save('./examples/' + str(iteration) + '_corrected_output.npy', np.squeeze(np.rollaxis(corrected_output[0].cpu().data.numpy()[0], 0, 3)))
+                
+                with open('upright_examples.txt', 'a') as output:
+                    output.write('{},{},{},{},{}\n'.format(other[0],
+                                                                          rx,
+                                                                          ry,
+                                                                          rot[0],
+                                                                          rot[1]))
+
+        # Print a report on the validation results
+        print('Evaluation finished in {} seconds'.format(time.time() - s))        
+
+
+    def evaluate_pano(self, checkpoint_path):
+        print('Evaluating model....')
+
+        # Load the checkpoint to evaluate
+        self.load_checkpoint(checkpoint_path, True, True)
+
+        # Put the model in eval mode
+        self.network = self.network.eval()
+
+        # print(self.network.module.input0_0.conv.bias)
+        # print(self.network.module.input0_0.conv.bias.shape)
+        # exit()
+
+        # Reset meter
+        self.reset_eval_metrics()
+
+        # Load data
+        s = time.time()
+        with torch.no_grad():
+            rgb = io.imread('/home/paulo/datasets/lab/lab_original/SAM_100_0130.jpg').astype(np.float32) / 255.
+            rgb = cv2.resize(rgb, (256,512))
+            rgb = torch.from_numpy(rgb.transpose(2,0,1)).float()
+            rgb.to(self.device) 
+            inputs = [rgb]
+            #inputs, gt, other = self.parse_data(data)
+
+            # Run a forward pass
+
+            output = self.forward_pass(inputs)
+            pause()
+            # Compute the evaluation metrics
+            self.compute_eval_metrics(output, gt)
+
+            # If trying to save intermediate outputs
+            if self.validation_sample_freq >= 0:
+                # Save the intermediate outputs
+                if i % self.validation_sample_freq == 0:
+                    self.save_samples(inputs, gt, other, output)
+
+        # Print a report on the validation results
+        print('Evaluation finished in {} seconds'.format(time.time() - s))
+        self.print_validation_report()
+
+    
+
+    def evaluate_equidepth(self, device):
+        print('Evaluating model....')
+
+
+
+        self.reset_eval_metrics()
+
+        # Load data
+        s = time.time()
+        with torch.no_grad():
+            for step in range(325):
+                print(
+                    'Evaluating {}/325'.format(step),
+                    end='\r')
+
+                # Parse the data
+                output = np.load('../EquiDepth/predictions_3d60/prediction_{}.npy'.format(step))
+                depth = np.load('../EquiDepth/predictions_3d60/gt_{}.npy'.format(step))
+                depth_mask = ((depth <= 20) & (depth > 0.)).astype(np.uint8)
+                
+                depth *= depth_mask
+
+                output = np.expand_dims(output,axis=0)
+                output = np.expand_dims(output,axis=0)
+                depth = np.expand_dims(depth,axis=0)
+                depth = np.expand_dims(depth,axis=0)
+                depth_mask = np.expand_dims(depth_mask,axis=0)
+                depth_mask = np.expand_dims(depth_mask,axis=0)
+
+                output = torch.from_numpy(output).float().to(device)
+                depth = torch.from_numpy(depth).float().to(device)
+                depth_mask = torch.from_numpy(depth_mask).float().to(device)
+                
+                output = [output]
+                gt = [depth, depth_mask]
+
+                # Compute the evaluation metrics
+                self.compute_eval_metrics(output, gt)
+
+                # If trying to save intermediate outputs
+                if self.validation_sample_freq >= 0:
+                    # Save the intermediate outputs
+                    if i % self.validation_sample_freq == 0:
+                        self.save_samples(inputs, gt, other, output)
+
+        # Print a report on the validation results
+        print('Evaluation finished in {} seconds'.format(time.time() - s))
+        self.print_validation_report()
+
 
     def parse_data(self, data):
         '''
@@ -397,7 +781,7 @@ class OmniDepthTrainer(object):
         # Align the prediction scales via median
         median_scaling_factor = gt_depth[depth_mask > 0].median() / depth_pred[
             depth_mask > 0].median()
-        #depth_pred *= median_scaling_factor
+        depth_pred *= median_scaling_factor
 
         abs_rel = abs_rel_error(depth_pred, gt_depth, depth_mask)
         sq_rel = sq_rel_error(depth_pred, gt_depth, depth_mask)

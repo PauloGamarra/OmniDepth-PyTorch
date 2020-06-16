@@ -16,15 +16,14 @@ from pdb import set_trace as pause
 import os.path as osp
 import timeit 
 
-from fibonacci_sph import fibonacci_sphere, cart2sph
-
 
 # --------------
 # PARAMETERS
 # --------------
-num_points = 100
+rot_range = [-90, 90]
 num_tests = 10000
 seed = 42
+
 network_type = 'RectNet' # 'RectNet' or 'UResNet'
 experiment_name = 'omnidepth'
 input_dir = '/home/paulo/datasets/3d60' # Dataset location
@@ -88,6 +87,5 @@ trainer = OmniDepthTrainer(
         validation_sample_freq=validation_sample_freq)
 
 
-points = fibonacci_sphere(num_points)
 
-trainer.evaluate_rotations(checkpoint_path, points, num_tests, device)
+trainer.evaluate_rotations(checkpoint_path, num_tests, rot_range, device, seed)

@@ -13,6 +13,8 @@ import OpenEXR, Imath, array
 import math
 import os.path as osp
 
+from pdb import set_trace as pause
+
 
 class OmniDepthDataset(torch.utils.data.Dataset):
 	'''PyTorch dataset module for effiicient loading'''
