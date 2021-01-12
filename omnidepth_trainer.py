@@ -331,7 +331,7 @@ class OmniDepthTrainer(object):
                 # Rotate randomly
                 
                 rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
-                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+                random_r = R.from_euler('zxy', [0, rx, ry], degrees=True)
  
                 inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
                 inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
@@ -369,7 +369,7 @@ class OmniDepthTrainer(object):
                                                                           self.d2_inlier_meter.avg,
                                                                           self.d3_inlier_meter.avg))
 
-                self.reset_eval_metrics()
+                #self.reset_eval_metrics()
                  
                
                 # If trying to save intermediate outputs
@@ -380,6 +380,7 @@ class OmniDepthTrainer(object):
 
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))
+        self.print_validation_report()
 
     
     def evaluate_upright(self, checkpoint_path, num_tests, rot_range, device, seed=42):
@@ -434,7 +435,7 @@ class OmniDepthTrainer(object):
                 # Rotate randomly
                 
                 rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
-                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+                random_r = R.from_euler('zxy', [0, rx, ry], degrees=True)
  
                 inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
                 inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
@@ -460,8 +461,11 @@ class OmniDepthTrainer(object):
 
                 rot = (float(rot[0][0] * 90), float(rot[0][1] * 90))
 
-               
-                correction_r = R.from_euler('zyx', [0,rot[1],rot[0]], degrees=True) 
+                #################################################################
+                #if rot[1] > 90:
+                #    print(rot[1])
+                ################################################################# 
+                correction_r = R.from_euler('zxy', [0,rot[0],rot[1]], degrees=True) 
                 inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , correction_r.inv().as_matrix())
                 inputs = np.expand_dims(np.rollaxis(inputs,2,0), axis=0)
                 inputs = [torch.from_numpy(inputs).float().to(device)]
@@ -507,7 +511,7 @@ class OmniDepthTrainer(object):
                                                                           self.d2_inlier_meter.avg,
                                                                           self.d3_inlier_meter.avg))
 
-                #self.reset_eval_metrics()
+                self.reset_eval_metrics()
 
                  
                
@@ -519,7 +523,7 @@ class OmniDepthTrainer(object):
 
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))        
-        self.print_validation_report()    
+        #self.print_validation_report()    
 
     def upright_examples(self, checkpoint_path, num_tests, rot_range, device, seed=42):
         print('Evaluating on rotations....')
@@ -573,7 +577,7 @@ class OmniDepthTrainer(object):
                 # Rotate randomly
                 
                 rx, ry = np.random.uniform(rot_range[0], rot_range[1],2)
-                random_r = R.from_euler('zyx', [0, ry, rx], degrees=True)
+                random_r = R.from_euler('zxy', [0, rx, ry], degrees=True)
  
                 rot_inputs = synthesizeRotation(np.rollaxis(inputs[0].cpu().data.numpy()[0], 0, 3) , random_r.as_matrix())
                 rot_inputs = np.expand_dims(np.rollaxis(rot_inputs,2,0), axis=0)
@@ -596,7 +600,7 @@ class OmniDepthTrainer(object):
                 rot = (float(rot[0][0] * 90), float(rot[0][1] * 90))
 
                
-                correction_r = R.from_euler('zyx', [0,rot[1],rot[0]], degrees=True) 
+                correction_r = R.from_euler('zxy', [0,rot[0],rot[1]], degrees=True) 
                 corrected_inputs = synthesizeRotation(np.rollaxis(rot_inputs[0].cpu().data.numpy()[0], 0, 3) , correction_r.inv().as_matrix())
                 corrected_inputs = np.expand_dims(np.rollaxis(corrected_inputs,2,0), axis=0)
                 corrected_inputs = [torch.from_numpy(corrected_inputs).float().to(device)]
